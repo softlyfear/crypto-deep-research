@@ -84,7 +84,7 @@ def main(argv=None):
         return 1
     if command != "inspect" and isinstance(result, dict) and result.get("status") in {"error", "unavailable"}:
         return 1
-    if command == "discover" and any(record["status"] == "error" for record in result.values()):
+    if command == "discover" and any(record["status"] != "ok" for record in result.values()):
         return 1
     return 0
 

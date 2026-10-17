@@ -27,6 +27,8 @@ MAX_BODY = 16 * 1024 * 1024
 DOWNLOAD_TIMEOUT = 30
 KINDS = ("official", "aggregator", "explorer", "rpc", "other", "search")
 RPC_METHODS = {"eth_chainId", "eth_blockNumber", "eth_getBalance", "eth_getCode", "eth_getBlockByNumber"}
+RPC_BLOCK_QUANTITIES = {"/result/number", "/result/timestamp", "/result/gasUsed", "/result/gasLimit",
+                        "/result/baseFeePerGas", "/result/size"}
 PROFILES = {"deep": {"max_requests": 96, "minutes": 60}, "quick": {"max_requests": 24, "minutes": 15}}
 VERIFICATION_NOTICE = "Verification: no confirmed independent cross-model review."
 API_SETTINGS = (
@@ -507,6 +509,9 @@ def text_number(quote, literal):
             token = token[:-1]
         if GROUPED_NUMBER.fullmatch(token):
             tokens.append(token)
+            # "1,234." may end a sentence rather than carry a decimal point.
+            if token.endswith(".") and GROUPED_NUMBER.fullmatch(token[:-1]):
+                tokens.append(token[:-1])
     if literal in tokens:
         return number(literal.replace(",", ""))
     if literal in (match.group() for match in WORD_NUMBER.finditer(quote)) and literal.casefold() in NUMBER_WORDS:
@@ -527,7 +532,9 @@ def observation_value(record, body, path, *, quote=None, literal=None):
         raise ResearchError("A numeric literal requires its exact source quote")
     document = json.loads(body, parse_float=Decimal)
     value = pointer(document, path)
-    if record.get("rpc_request", {}).get("method") in {"eth_chainId", "eth_blockNumber", "eth_getBalance"} and path == "/result":
+    method = record.get("rpc_request", {}).get("method")
+    if (method in {"eth_chainId", "eth_blockNumber", "eth_getBalance"} and path == "/result"
+            or method == "eth_getBlockByNumber" and path in RPC_BLOCK_QUANTITIES):
         if not isinstance(value, str) or not value.startswith("0x"):
             raise ResearchError("Numeric EVM RPC result must be hex-encoded")
         try:
@@ -785,8 +792,22 @@ def check(run, *, final=False, _snapshot=False):
             by_id[identifier] = metric
         if final:
             report_bytes = (directory / "report.md").read_bytes() if (directory / "report.md").is_file() else b""
-            report_text = report_bytes.decode("utf-8")
-            claims, verification, coverage = None, None, None
+            try:
+                report_text = report_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                errors.append("Report must be valid UTF-8")
+                report_text = report_bytes.decode("utf-8", errors="replace")
+
+            def final_json(filename):
+                # Agent-written artifacts may be malformed; report it instead of crashing.
+                if not (directory / filename).is_file():
+                    return None, False
+                try:
+                    return load(directory / filename), True
+                except ValueError:
+                    errors.append("Malformed final artifact: " + filename)
+                    return None, False
+
             try:
                 validate_identity(manifest.get("identity"), evidence)
             except (ResearchError, ValueError, TypeError) as error:
@@ -796,8 +817,10 @@ def check(run, *, final=False, _snapshot=False):
                     errors.append("Missing final artifact: " + filename)
             if (directory / "report.md").is_file() and not report_text.strip():
                 errors.append("Report is empty")
-            if (directory / "claims.json").is_file():
-                claims = load(directory / "claims.json")
+            claims, claims_loaded = final_json("claims.json")
+            verification, verification_loaded = final_json("verification.json")
+            coverage, _ = final_json("coverage.json")
+            if claims_loaded:
                 if not isinstance(claims, list) or not claims:
                     errors.append("claims.json must be a non-empty array")
                 else:
@@ -810,13 +833,15 @@ def check(run, *, final=False, _snapshot=False):
                         category = claim.get("category")
                         sources = claim.get("evidence_ids", [])
                         metric_ids = claim.get("metric_ids", [])
-                        if not identifier or identifier in claim_ids or not claim.get("text"):
+                        if not isinstance(identifier, str) or not identifier or identifier in claim_ids or not claim.get("text"):
                             errors.append("Missing or duplicate claim ID/text")
-                        claim_ids.add(identifier)
+                        if isinstance(identifier, str):
+                            claim_ids.add(identifier)
                         if category not in {"fact", "inference", "scenario"}:
                             errors.append("Unknown claim category: " + str(identifier))
-                        if not isinstance(sources, list) or not isinstance(metric_ids, list):
-                            errors.append("Claim references must be arrays: " + str(identifier))
+                        if (not isinstance(sources, list) or not isinstance(metric_ids, list)
+                                or any(not isinstance(value, str) for value in sources + metric_ids)):
+                            errors.append("Claim references must be arrays of IDs: " + str(identifier))
                             continue
                         if category == "fact" and not sources and not metric_ids:
                             errors.append("Uncited fact: " + str(identifier))
@@ -828,9 +853,8 @@ def check(run, *, final=False, _snapshot=False):
                                              for source in by_id[metric_id]["evidence_ids"]]
                         if category == "fact" and support and all(evidence.get(source, {}).get("kind") == "search" for source in support):
                             errors.append("Search discovery cannot substantiate a fact without original sources: " + str(identifier))
-            if (directory / "verification.json").is_file():
-                verification = load(directory / "verification.json")
-                state = verification.get("status") if isinstance(verification, dict) else None
+            if verification_loaded:
+                state =verification.get("status") if isinstance(verification, dict) else None
                 if state not in {"independent", "same_model_or_unknown", "not_performed"}:
                     errors.append("Invalid verification status")
                 elif state == "independent":
@@ -847,10 +871,9 @@ def check(run, *, final=False, _snapshot=False):
                     if (directory / "report.md").is_file() and VERIFICATION_NOTICE not in report_text:
                         errors.append("Report must include the exact notice: " + VERIFICATION_NOTICE)
             from .quality import assess
-            if (directory / "coverage.json").is_file():
-                coverage = load(directory / "coverage.json")
-            quality, quality_errors = assess(coverage, evidence, claims, required=manifest.get("coverage_schema") == 1,
-                                            verification=verification)
+            # A malformed coverage.json is already an error; don't also report it missing.
+            required = manifest.get("coverage_schema") == 1 and not (directory / "coverage.json").is_file()
+            quality, quality_errors = assess(coverage, evidence, claims, required=required, verification=verification)
             errors.extend(quality_errors)
             if quality["status"] != "adequate":
                 warnings.append("Research coverage is " + quality["status"] + "; artifact validity is not answer completeness")

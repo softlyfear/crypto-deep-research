@@ -360,6 +360,41 @@ class RunTests(unittest.TestCase):
         (self.run / "report.md").write_text("Overconfident report.", encoding="utf-8")
         self.assertFalse(core.check(self.run, final=True)["ok"])
 
+    def test_malformed_final_artifacts_are_errors_not_crashes(self):
+        for filename, content in (("claims.json", b"{bad"), ("verification.json", b"[1,"),
+                                  ("coverage.json", b"\xff"), ("report.md", b"\xff\xfe")):
+            with self.subTest(filename=filename):
+                self.final_artifacts()
+                (self.run / filename).write_bytes(content)
+                result = core.check(self.run, final=True)
+                self.assertFalse(result["ok"])
+                self.assertTrue(any(filename in error or "UTF-8" in error for error in result["errors"]))
+                self.assertNotIn("Missing final artifact: " + filename, result["errors"])
+
+    def test_malformed_claim_references_are_errors_not_crashes(self):
+        self.final_artifacts()
+        claims = core.load(self.run / "claims.json")
+        claims.append({"id": ["unhashable"], "text": "x", "category": "inference", "evidence_ids": [{"id": "x"}]})
+        core.save(self.run / "claims.json", claims)
+        self.assertFalse(core.check(self.run, final=True)["ok"])
+
+    def test_sentence_final_period_is_not_part_of_literal(self):
+        for quote, literal, expected in (("Fees were 1,234.", "1,234", "1234"), ("Fees were 5.", "5", "5"),
+                                         ("Fees were 5.", "5.", "5")):
+            with self.subTest(quote=quote, literal=literal):
+                self.assertEqual(core.observation_value({}, quote.encode(), "", quote=quote, literal=literal), Decimal(expected))
+
+    def test_rpc_block_quantities_are_hex_decoded(self):
+        self.download.return_value = (b'{"jsonrpc":"2.0","id":1,"result":{"number":"0x10","timestamp":"0x5f5e100","hash":"0xab"}}',
+                                      "application/json", 200, "https://rpc.example.com/")
+        with patch.dict("os.environ", {"CR_RPC_URL": "https://rpc.example.com/"}):
+            record = core.rpc(self.run, "eth_getBlockByNumber", ["latest", False])
+        metric = core.observe(self.run, record["id"], "/result/timestamp", label="Block time", unit="unix_seconds")
+        self.assertEqual(metric["value"], "100000000")
+        with self.assertRaises(core.ResearchError):
+            core.observe(self.run, record["id"], "/result/hash", label="Hash", unit="none")
+        self.assertTrue(core.check(self.run)["ok"])
+
     def test_evidence_path_cannot_escape_run(self):
         record = self.evidence()
         record["body_path"] = "../../elsewhere"

@@ -113,8 +113,9 @@ class Renderer:
                 source_ids = self.metrics[identifier]["evidence_ids"]
             elif identifier in self.claims:
                 claim = self.claims[identifier]
-                source_ids = list(claim["evidence_ids"])
-                for metric_id in claim["metric_ids"]:
+                # The final check treats missing reference arrays as empty.
+                source_ids = list(claim.get("evidence_ids", []))
+                for metric_id in claim.get("metric_ids", []):
                     self.track_metric(metric_id)
                     source_ids.extend(self.metrics[metric_id]["evidence_ids"])
             else:
@@ -148,6 +149,9 @@ class Renderer:
         prefix = "\ufff0code"
         while prefix in text:
             prefix += "_"
+        # Marks removed citations so punctuation cleanup touches only their surroundings.
+        removed = "\ufff2"
+        text = text.replace(removed, "")
 
         def protect(match):
             if ARTIFACT_ID.fullmatch(match[2]):
@@ -165,7 +169,7 @@ class Renderer:
                     raise core.ResearchError("Numbered source link is not backed by saved evidence")
                 return match[0]
             self.references(identifiers)
-            return "" if match[1].isdigit() else match[1]
+            return removed if match[1].isdigit() else match[1]
 
         text = SOURCE_LINK.sub(source_label, text)
 
@@ -178,23 +182,24 @@ class Renderer:
         for match in INLINE_REF.finditer(text):
             self.source_ids(reference_ids(match))
         if not table:
-            text = LINEAGE.sub(lambda match: match[1] + ": " + match[2][1:-1] if match[2] else "", text)
+            text = LINEAGE.sub(lambda match: match[1] + ": " + match[2][1:-1] if match[2] else removed, text)
 
         def collect(match):
-            return self.references(reference_ids(match))
+            return self.references(reference_ids(match)) + removed
 
         operational = text.startswith(("Dedicated apply_patch", "Ошибки инструментов", "К журналу добавлены",
                                        "Выполнены четыре native", "В audit trail", "Один старый MCP", "Старый MCP-validator"))
         if operational and not table and not has_claims:
             return ""
-        text = re.sub(r"\s+использует коэффициент\s+" + ID_LIST, "", text)
+        text = re.sub(r"\s+использует коэффициент\s+" + ID_LIST, removed, text)
         text = INLINE_REF.sub(collect, text)
-        text = re.sub(r"\s+[—–-]\s*(?=[.;,]|$)", "", text)
-        text = re.sub(r"\s+(?:и|and)\s*(?=[.;,]|$)", "", text)
-        text = re.sub(r"\s+([.;,])", r"\1", text)
-        text = re.sub(r"\s*[,;:]\s*(?=[.;,]|$)", "", text)
-        text = re.sub(r"(?m)^\s*[.;]\s*", "", text)
-        text = re.sub(r" {2,}", " ", text)
+        text = re.sub(removed + r"(?:[ \t]*" + removed + ")+", removed, text)
+        # A removed citation at line start takes its trailing separator with it.
+        text = re.sub(r"(?m)^[ \t]*" + removed + r"[ \t]*[.;]?[ \t]*", "", text)
+        # Before punctuation or line end, drop the connector that introduced the citation.
+        text = re.sub(r"[ \t]*(?:[—–-]|\b(?:и|and))?[ \t]*[,;:]?[ \t]*" + removed + r"(?=[ \t]*(?:[.;,]|$))",
+                      "", text, flags=re.MULTILINE)
+        text = re.sub(r"[ \t]*" + removed, "", text)
         text = ISO_TIME.sub(lambda match: readable_date(match[0], seconds=True), text)
         text = html.escape(text, quote=False)
         for key, value in protected.items():
@@ -413,8 +418,14 @@ class Renderer:
         for heading, body in rendered[:len(memo)]:
             lines.extend(["## " + plain(heading), "", body.strip(), ""])
         lines.extend(["## Содержание", ""])
+        anchors = {"содержание": 1}
         for heading, _ in rendered:
             anchor = re.sub(r"[^\w -]", "", heading.casefold()).replace(" ", "-")
+            # Markdown viewers suffix repeated heading anchors with -1, -2, ...
+            count = anchors.get(anchor, 0)
+            anchors[anchor] = count + 1
+            if count:
+                anchor += "-" + str(count)
             lines.append("- [" + plain(heading) + "](#" + quote(anchor) + ")")
         lines.extend(["- [Источники](#" + quote("источники") + ")", ""])
         for heading, body in rendered[len(memo):]:

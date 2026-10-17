@@ -529,3 +529,29 @@ class PublicationTests(unittest.TestCase):
         self.assertTrue(legacy.is_file())
         self.assertEqual(result["removed_legacy_reports"], [])
         self.assertTrue(result["cleanup_warnings"])
+
+    def test_claim_without_reference_arrays_publishes_like_final_check_accepts(self):
+        claims = core.load(self.run / "claims.json")
+        claims.append({"id": "claim-002", "text": "An interpretation", "category": "inference"})
+        core.save(self.run / "claims.json", claims)
+        (self.run / "report.md").write_text(self.report + "\n## Вывод\n\nИнтерпретация. [claim-002]\n", encoding="utf-8")
+        self.assertTrue(core.check(self.run, final=True)["ok"])
+        text = Path(self.publish()["report_path"]).read_text(encoding="utf-8")
+        self.assertIn("Интерпретация.", text)
+        self.assertNotIn("[claim-002]", text)
+
+    def test_punctuation_cleanup_is_limited_to_removed_citations(self):
+        extra = ("\n## Риски\n\nОсновные выводы:\n\n- Первый риск — [claim-001].\n- Второй, [claim-001], важен\n\n"
+                 "| Параметр | Значение |\n| :--- | ---: |\n| A | 1 |\n")
+        (self.run / "report.md").write_text(self.report + extra, encoding="utf-8")
+        text = Path(self.publish()["report_path"]).read_text(encoding="utf-8")
+        self.assertIn("Основные выводы:", text)
+        self.assertIn("- Первый риск.", text)
+        self.assertIn("- Второй, важен", text)
+        self.assertIn("| :--- | ---: |", text)
+
+    def test_repeated_headings_get_distinct_contents_anchors(self):
+        (self.run / "report.md").write_text(self.report + "\n## Identity\n\nПовтор. [claim-001]\n", encoding="utf-8")
+        text = Path(self.publish()["report_path"]).read_text(encoding="utf-8")
+        self.assertIn("(#identity)", text)
+        self.assertIn("(#identity-1)", text)
