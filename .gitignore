@@ -1,0 +1,10 @@
+.env
+.env.*
+artifacts/
+/reports/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.kilo/worktrees/
+.kilo/agent-manager.json

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "default_agent": "crypto-research",
+  "share": "disabled",
+  "subagent_depth": 1,
+  "mcp": {
+    "crypto_evidence": {
+      "type": "local",
+      "command": ["python3", "-m", "crypto_research.mcp"],
+      "enabled": true,
+      "timeout": 60000
+    },
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true,
+      "timeout": 60000
+    },
+    "coingecko": {
+      "type": "remote",
+      "url": "https://mcp.api.coingecko.com/mcp",
+      "enabled": true,
+      "timeout": 60000
+    },
+    "etherscan": {
+      "type": "remote",
+      "url": "https://mcp-keyless.etherscan.io/mcp",
+      "enabled": true,
+      "timeout": 60000
+    }
+  },
+  "permission": {
+    "*": "ask",
+    "read": {
+      "*": "allow",
+      ".env": "deny",
+      ".env.*": "deny",
+      "**/.env": "deny",
+      "**/.env.*": "deny",
+      "**/auth.json": "deny",
+      "**/*.pem": "deny",
+      "**/*.key": "deny"
+    },
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "todowrite": "allow",
+    "bash": "ask",
+    "crypto_evidence_research": "allow",
+    "crypto_evidence_audit": "allow",
+    "context7_*": "allow",
+    "coingecko_*": "ask",
+    "etherscan_*": "ask",
+    "edit": "deny",
+    "task": "deny",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "external_directory": "deny"
+  }
+}
