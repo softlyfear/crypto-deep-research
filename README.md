@@ -58,3 +58,7 @@ kilo "$PWD"
 python3 -m unittest discover -s tests -v
 kilo config check --pure
 ```
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).
