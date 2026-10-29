@@ -8,4 +8,18 @@
 - Project questions default to deep crypto-research: question-driven broad discovery, original primary and independent sources, targeted gap closure, detailed Russian synthesis and a sufficiency review. Quick scans require an explicit request. Preserve request/deadline ceilings; maximize useful evidence, not duplicate pages. New runs require coverage.json; structural ok is not proof of a complete answer or justified valuation. Use crypto-code for implementation.
 - The critic and existing-run audit make no new external requests. Research agents edit only their assigned run artifacts; select crypto-code for implementation work.
 - Keep README concise, env.example free of real secrets, and .env/artifacts/reports excluded from Git. Publish only the final full study in reports/ through the checked local publisher; service artifacts stay in artifacts/runs. The environment is exported before Kilo starts; do not claim automatic dotenv loading.
-- Validate with python3 -m unittest discover -s tests -v and kilo config check --pure. Do not invoke a model-backed research run, change global configuration, or commit/push unless requested.
+- Validate with python3 -m unittest discover -s tests -v and kilo config check --pure. Do not invoke a model-backed research run or change global configuration unless requested.
+
+## Git authorization
+
+- The user has pre-authorized `git commit` and ordinary `git push` for completed
+  changes within the requested task. They may run automatically without a separate
+  request or confirmation, after the applicable project checks pass.
+- Before committing, inspect the working tree and staged diff; stage only changes
+  belonging to the task. Preserve unrelated user changes and never commit secrets.
+- Push to the working branch's configured remote branch. This authorization does
+  not cover force push, rewriting published history, or deleting remote branches;
+  those actions require explicit user approval. Do not bypass checks or hooks.
+- Author and committer must be the user from `git config user.name` / `user.email`.
+  Attribute AI contributions with `Co-Authored-By: Codex <actual model and version>`
+  without an email address; never invent the model or an AI-service email.
