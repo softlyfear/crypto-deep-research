@@ -90,7 +90,7 @@ def preflight():
     """Check configuration offline; never return credential values."""
     settings, warnings = [], [
         "Presence and syntax only; authentication, quotas, DNS and network availability are not verified.",
-        "Keys do not authorize paid requests or enable integrations; MCP authentication is managed separately in Kilo.",
+        "Keys do not authorize paid requests or enable integrations; MCP authentication is managed separately in OpenCode.",
     ]
     for name, service, group, supported in API_SETTINGS:
         configured = bool(os.environ.get(name, "").strip())

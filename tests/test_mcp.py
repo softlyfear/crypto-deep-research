@@ -492,6 +492,30 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(len(threads), 6)
 
 
+def _last_effect(permissions, action, resource):
+    matched = None
+    for rule in permissions:
+        if rule["action"] == action and rule["resource"] == resource:
+            matched = rule["effect"]
+    return matched
+
+
+def _frontmatter_permissions(text):
+    frontmatter = text.split("---", 2)[1]
+    rules = []
+    current = None
+    for line in frontmatter.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- action:"):
+            current = {"action": stripped.split(":", 1)[1].strip()}
+            rules.append(current)
+        elif current is not None and stripped.startswith("resource:"):
+            current["resource"] = stripped.split(":", 1)[1].strip().strip('"')
+        elif current is not None and stripped.startswith("effect:"):
+            current["effect"] = stripped.split(":", 1)[1].strip()
+    return rules
+
+
 class ProjectConfigTests(unittest.TestCase):
     root = Path(__file__).resolve().parents[1]
 
@@ -508,33 +532,38 @@ class ProjectConfigTests(unittest.TestCase):
         patterns = (self.root / ".gitignore").read_text(encoding="utf-8").splitlines()
         self.assertIn("/reports/", patterns)
         self.assertIn("artifacts/", patterns)
-        command = (self.root / ".kilo/command/research.md").read_text(encoding="utf-8")
+        command = (self.root / ".opencode/commands/research.md").read_text(encoding="utf-8")
         self.assertIn('["publish","RUN"]', command)
         self.assertIn("After a passing final gate", command)
 
     def test_deep_research_default_keeps_research_and_secret_guards(self):
-        config = json.loads((self.root / "kilo.json").read_text(encoding="utf-8"))
+        config = json.loads((self.root / "opencode.json").read_text(encoding="utf-8"))
         self.assertEqual(config["default_agent"], "crypto-research")
-        permissions = config["permission"]
-        self.assertEqual(permissions["*"], "ask")
-        for tool in ("edit", "task", "webfetch", "websearch", "external_directory"):
-            self.assertEqual(permissions[tool], "deny")
-        for tool in ("bash", "coingecko_*", "etherscan_*"):
-            self.assertEqual(permissions[tool], "ask")
-        for pattern in (".env", ".env.*", "**/.env", "**/.env.*", "**/auth.json", "**/*.pem", "**/*.key"):
-            self.assertEqual(permissions["read"][pattern], "deny")
+        self.assertEqual(config["experimental"]["subagent_depth"], 1)
+        evidence = config["mcp"]["servers"]["crypto_evidence"]
+        self.assertEqual(evidence["command"], ["python3", "-m", "crypto_research.mcp"])
+        self.assertFalse(evidence["codemode"])
+        self.assertEqual(config["mcp"]["timeout"], {"startup": 60000, "catalog": 60000, "execution": 60000})
+        permissions = config["permissions"]
+        self.assertEqual(_last_effect(permissions, "*", "*"), "ask")
+        for action in ("edit", "subagent", "webfetch", "websearch", "external_directory"):
+            self.assertEqual(_last_effect(permissions, action, "*"), "deny")
+        for action in ("shell", "coingecko_*", "etherscan_*"):
+            self.assertEqual(_last_effect(permissions, action, "*"), "ask")
+        for resource in (".env", ".env.*", "*/.env", "*/.env.*", "auth.json", "*/auth.json", "*.pem", "*.key"):
+            self.assertEqual(_last_effect(permissions, "read", resource), "deny")
 
     def test_code_agent_allows_development_but_not_secrets_or_research_artifacts(self):
-        agent = (self.root / ".kilo/agent/crypto-code.md").read_text(encoding="utf-8")
-        permissions = agent.split("---", 2)[1]
-        self.assertIn('  edit:\n    "*": allow\n', permissions)
-        for tool in ("bash", "webfetch", "websearch", "external_directory"):
-            self.assertIn("  " + tool + ": allow\n", permissions)
-        for tool in ("coingecko_*", "etherscan_*"):
-            self.assertIn("  " + tool + ": ask\n", permissions)
-        self.assertIn("  task: deny\n", permissions)
-        for pattern in (".env", ".env.*", "**/.env", "**/.env.*", "artifacts/**"):
-            self.assertIn('    "' + pattern + '": deny\n', permissions)
+        agent = (self.root / ".opencode/agents/crypto-code.md").read_text(encoding="utf-8")
+        permissions = _frontmatter_permissions(agent)
+        self.assertEqual(_last_effect(permissions, "edit", "*"), "allow")
+        for action in ("shell", "webfetch", "websearch", "external_directory", "context7_*"):
+            self.assertEqual(_last_effect(permissions, action, "*"), "allow")
+        for action in ("coingecko_*", "etherscan_*"):
+            self.assertEqual(_last_effect(permissions, action, "*"), "ask")
+        self.assertEqual(_last_effect(permissions, "subagent", "*"), "deny")
+        for resource in (".env", ".env.*", "*/.env", "*/.env.*", "artifacts/*"):
+            self.assertEqual(_last_effect(permissions, "edit", resource), "deny")
 
     def test_env_example_contains_only_empty_unique_values_and_marks_future_paid_keys(self):
         template = (self.root / "env.example").read_text(encoding="utf-8")

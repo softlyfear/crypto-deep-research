@@ -8,7 +8,7 @@ from . import core
 
 
 def parser():
-    root = argparse.ArgumentParser(description="Evidence-first tools for Kilo-native crypto research")
+    root = argparse.ArgumentParser(description="Evidence-first tools for OpenCode-native crypto research")
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight", help="Check optional API settings locally; no secrets or network requests")
     init = sub.add_parser("init", help="Create an isolated run and shared collection budget")

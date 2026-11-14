@@ -1,0 +1,61 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "crypto-research",
+  "experimental": {
+    "subagent_depth": 1
+  },
+  "mcp": {
+    "timeout": {
+      "startup": 60000,
+      "catalog": 60000,
+      "execution": 60000
+    },
+    "servers": {
+      "crypto_evidence": {
+        "type": "local",
+        "command": ["python3", "-m", "crypto_research.mcp"],
+        "codemode": false
+      },
+      "context7": {
+        "type": "remote",
+        "url": "https://mcp.context7.com/mcp",
+        "codemode": false
+      },
+      "coingecko": {
+        "type": "remote",
+        "url": "https://mcp.api.coingecko.com/mcp",
+        "codemode": false
+      },
+      "etherscan": {
+        "type": "remote",
+        "url": "https://mcp-keyless.etherscan.io/mcp",
+        "codemode": false
+      }
+    }
+  },
+  "permissions": [
+    { "action": "*", "resource": "*", "effect": "ask" },
+    { "action": "read", "resource": "*", "effect": "allow" },
+    { "action": "read", "resource": ".env", "effect": "deny" },
+    { "action": "read", "resource": ".env.*", "effect": "deny" },
+    { "action": "read", "resource": "*/.env", "effect": "deny" },
+    { "action": "read", "resource": "*/.env.*", "effect": "deny" },
+    { "action": "read", "resource": "auth.json", "effect": "deny" },
+    { "action": "read", "resource": "*/auth.json", "effect": "deny" },
+    { "action": "read", "resource": "*.pem", "effect": "deny" },
+    { "action": "read", "resource": "*.key", "effect": "deny" },
+    { "action": "glob", "resource": "*", "effect": "allow" },
+    { "action": "grep", "resource": "*", "effect": "allow" },
+    { "action": "shell", "resource": "*", "effect": "ask" },
+    { "action": "crypto_evidence_research", "resource": "*", "effect": "allow" },
+    { "action": "crypto_evidence_audit", "resource": "*", "effect": "allow" },
+    { "action": "context7_*", "resource": "*", "effect": "allow" },
+    { "action": "coingecko_*", "resource": "*", "effect": "ask" },
+    { "action": "etherscan_*", "resource": "*", "effect": "ask" },
+    { "action": "edit", "resource": "*", "effect": "deny" },
+    { "action": "subagent", "resource": "*", "effect": "deny" },
+    { "action": "webfetch", "resource": "*", "effect": "deny" },
+    { "action": "websearch", "resource": "*", "effect": "deny" },
+    { "action": "external_directory", "resource": "*", "effect": "deny" }
+  ]
+}
