@@ -1,7 +1,6 @@
 """Public HTML discovery; search results and links are unverified leads, not facts."""
 
 from html.parser import HTMLParser
-import ipaddress
 import re
 from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 
@@ -19,11 +18,9 @@ def lead_url(value, base):
                 or parts.port not in (None, 443) or parts.hostname == "localhost"
                 or parts.hostname.endswith(".localhost")):
             return None
-        try:
-            if not ipaddress.ip_address(parts.hostname).is_global:
-                return None
-        except ValueError:
-            pass
+        from .core import hostname_is_public_syntax
+        if not hostname_is_public_syntax(parts.hostname):
+            return None
         return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
     except ValueError:
         return None

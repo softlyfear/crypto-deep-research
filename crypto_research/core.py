@@ -61,6 +61,28 @@ def stamp():
     return now().isoformat()
 
 
+def hostname_is_public_syntax(hostname):
+    """Reject local and obfuscated address literals without DNS.
+
+    Ordinary hostnames stay allowed: preflight must not resolve names.
+    Decimal, hex, octal and shortened IPs are not hostnames; libc would
+    treat several of them as loopback even when ipaddress does not.
+    """
+    normalized = hostname.rstrip(".").lower()
+    if not normalized or normalized == "localhost" or normalized.endswith(".localhost"):
+        return False
+    if re.fullmatch(r"(?:0x[0-9a-f]+|\d+)", normalized):
+        return False
+    if re.fullmatch(r"\d+(?:\.\d+){1,3}", normalized):
+        parts = normalized.split(".")
+        if len(parts) != 4 or any(len(part) > 1 and part.startswith("0") for part in parts):
+            return False
+    try:
+        return ipaddress.ip_address(normalized).is_global
+    except ValueError:
+        return True
+
+
 def setting_value(name):
     value = os.environ.get(name, "")
     if not value.strip():
@@ -75,10 +97,7 @@ def setting_value(name):
                      and not parts.username and not parts.password and not parts.fragment
                      and parts.port in (None, 443))
             if valid:
-                try:
-                    valid = ipaddress.ip_address(parts.hostname).is_global
-                except ValueError:
-                    valid = parts.hostname != "localhost" and not parts.hostname.endswith(".localhost")
+                valid = hostname_is_public_syntax(parts.hostname)
         except ValueError:
             pass
         if not valid:
@@ -205,18 +224,48 @@ def init(query, *, root="artifacts/runs", mode="both", max_requests=None, minute
 def public_url(url):
     try:
         parts = urlsplit(url)
-        if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
-            raise ResearchError("Only public HTTPS URLs without embedded credentials are supported")
-        if parts.fragment:
-            raise ResearchError("Remove URL fragments before fetching")
-        if parts.port not in (None, 443):
-            raise ResearchError("Only HTTPS port 443 is supported")
+    except ValueError as error:
+        raise ResearchError("Invalid or unresolvable public HTTPS URL") from error
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        raise ResearchError("Only public HTTPS URLs without embedded credentials are supported")
+    if parts.fragment:
+        raise ResearchError("Remove URL fragments before fetching")
+    if parts.port not in (None, 443):
+        raise ResearchError("Only HTTPS port 443 is supported")
+    if not hostname_is_public_syntax(parts.hostname):
+        raise ResearchError("Private, loopback, link-local and reserved destinations are not allowed")
+    try:
         addresses = socket.getaddrinfo(parts.hostname, 443, type=socket.SOCK_STREAM)
     except (ValueError, OSError) as error:
         raise ResearchError("Invalid or unresolvable public HTTPS URL") from error
-    if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+    try:
+        private = not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses)
+    except ValueError as error:
+        raise ResearchError("Invalid or unresolvable public HTTPS URL") from error
+    if private:
         raise ResearchError("Private, loopback, link-local and reserved destinations are not allowed")
     return url
+
+
+SENSITIVE_NAME_SEGMENTS = frozenset({
+    "key", "token", "secret", "password", "passwd", "pwd", "signature", "sig",
+    "auth", "authorization", "authentication", "credential", "credentials",
+    "apikey", "cookie",
+})
+# Glued credential forms such as accesstoken. Do not treat English endings
+# such as the "key" in "turkey" or the "auth" in "author" as secrets.
+SENSITIVE_NAME_SUFFIXES = ("secret", "password", "token", "signature", "credential")
+
+
+def sensitive_name(name):
+    """True when a query or header name is a credential, not merely a substring."""
+    segments = [part for part in re.split(r"[^a-z0-9]+", name.casefold()) if part]
+    for segment in segments:
+        if segment in SENSITIVE_NAME_SEGMENTS:
+            return True
+        if any(segment.endswith(suffix) and len(segment) > len(suffix) for suffix in SENSITIVE_NAME_SUFFIXES):
+            return True
+    return False
 
 
 def safe_url(url, *, rpc=False):
@@ -225,8 +274,7 @@ def safe_url(url, *, rpc=False):
     # RPC paths and queries may contain keys.
     if rpc:
         return urlunsplit((parts.scheme, netloc, "/[endpoint]", "", ""))
-    secret_words = ("key", "token", "secret", "password", "signature", "auth", "credential")
-    query = [(key, "[redacted]" if any(word in key.lower() for word in secret_words) else value)
+    query = [(key, "[redacted]" if sensitive_name(key) else value)
              for key, value in parse_qsl(parts.query, keep_blank_values=True)]
     return urlunsplit((parts.scheme, netloc, parts.path, urlencode(query), ""))
 
@@ -239,7 +287,7 @@ class PublicRedirects(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         public_url(newurl)
         if urlsplit(req.full_url).netloc != urlsplit(newurl).netloc:
-            if any("key" in key.lower() or "authorization" in key.lower() for key in req.headers):
+            if any(sensitive_name(key) for key in req.headers):
                 raise ResearchError("Refusing cross-host redirect of an authenticated request")
         redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
         if redirected is not None and self.before_request is not None:
@@ -252,6 +300,8 @@ def connect_public(address, timeout, source_address=None):
     host, port = address
     if port != 443:
         raise ResearchError("Only HTTPS port 443 is supported")
+    if not hostname_is_public_syntax(host):
+        raise ResearchError("Private, loopback, link-local and reserved destinations are not allowed")
     addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
         raise ResearchError("Private, loopback, link-local and reserved destinations are not allowed")
@@ -338,8 +388,18 @@ def fetch(run, url, *, kind="other", label="", headers=None, payload=None, ttl=3
         index = load(directory / "evidence/index.json")
         for item in reversed(index):
             if item["cache_key"] == cache_key and item["status"] == "ok":
-                if (now() - datetime.fromisoformat(item["retrieved_at"])).total_seconds() < ttl:
-                    return {**item, "cache_hit": True}
+                try:
+                    fresh = (now() - datetime.fromisoformat(item["retrieved_at"])).total_seconds() < ttl
+                except (TypeError, ValueError):
+                    continue
+                if not fresh:
+                    continue
+                try:
+                    evidence_body(directory, item)
+                except (ResearchError, OSError, KeyError):
+                    # A missing or altered body must not pin a successful cache hit.
+                    continue
+                return {**item, "cache_hit": True}
     reserve_request(directory)
     record = {"id": "ev_" + uuid4().hex[:12], "url": safe_url(url, rpc=kind == "rpc"),
               "kind": kind, "label": label, "cache_key": cache_key, "retrieved_at": stamp(), "status": "error"}
@@ -497,13 +557,19 @@ NUMBER_WORDS = dict(zip(
 NUMBER_ATOM = "|".join((*NUMBER_WORDS, "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
                         "hundred", "thousand", "million", "billion", "trillion"))
 WORD_NUMBER = re.compile(r"(?<![\w-])(?:(?:minus|negative|plus|positive)\s+)?(?:" + NUMBER_ATOM + r")(?:(?:[\s-]+)(?:(?:and|point)\s+)?(?:" + NUMBER_ATOM + r"))*(?![\w-])", re.IGNORECASE)
-TEXT_NUMBER = re.compile(r"(?<![\w.,])[+-]?(?:\d[\d,]*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?![\d.eE])")
+TEXT_NUMBER = re.compile(r"(?<![\w.,])[+-]?(?:\d[\d,]*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?![\d.eE_])")
 GROUPED_NUMBER = re.compile(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?(?:[eE][+-]?\d+)?|[+-]?\.\d+(?:[eE][+-]?\d+)?")
+
+
+SIGN_WORD = re.compile(r"(?:^|[\s(\[{\"'])(?:minus|negative|plus|positive)\s+$", re.IGNORECASE)
 
 
 def text_number(quote, literal):
     tokens = []
     for match in TEXT_NUMBER.finditer(quote):
+        # "minus 3" is not the number 3; an attached sign is already part of the token.
+        if SIGN_WORD.search(quote[:match.start()]):
+            continue
         token = match.group()
         if token.endswith(","):
             token = token[:-1]

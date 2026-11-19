@@ -63,6 +63,29 @@ class RunTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("Duplicate evidence IDs are not allowed", result["errors"])
 
+    def test_corrupt_or_missing_cache_is_refetched(self):
+        first = self.evidence()
+        body = self.run / first["body_path"]
+        body.unlink()
+        missing = self.evidence()
+        self.assertFalse(missing.get("cache_hit"))
+        self.assertNotEqual(first["id"], missing["id"])
+        self.assertEqual(missing["status"], "ok")
+        (self.run / missing["body_path"]).write_bytes(b"tampered")
+        refreshed = self.evidence()
+        self.assertFalse(refreshed.get("cache_hit"))
+        self.assertEqual(core.status(self.run)["budget"]["requests_started"], 3)
+        self.assertEqual(core.evidence_body(self.run, refreshed), self.body)
+
+    def test_fetch_keeps_public_query_names_and_redacts_credentials(self):
+        record = core.fetch(self.run, "https://example.com/post?author=alice&keywords=omni&tokenomics=var&api_key=SUPERSECRET&sig=SUPERSECRET")
+        self.assertIn("author=alice", record["url"])
+        self.assertIn("keywords=omni", record["url"])
+        self.assertIn("tokenomics=var", record["url"])
+        stored = (self.run / "evidence/index.json").read_text(encoding="utf-8")
+        self.assertNotIn("SUPERSECRET", stored)
+        self.assertNotIn("SUPERSECRET", json.dumps(record))
+
     def test_cache_preserves_retrieval_time_and_budget(self):
         first, second = self.evidence(), self.evidence()
         self.assertEqual(first["id"], second["id"])
@@ -183,6 +206,8 @@ class RunTests(unittest.TestCase):
                  ("1,,000", "1"), ("1234,000", "1234,000"), ("-3,000", "3,000"),
                  ("one hundred", "one"), ("twenty-three", "three"), ("one point five", "one"),
                  ("three years", "3"), ("minus three", "three"), ("positive three", "three"),
+                 ("minus 3", "3"), ("negative 12", "12"), ("plus 5", "5"),
+                 ("the minus 3 case", "3"), ("3 minus 1", "1"), ("1_000", "1"),
                  ("1e3", "1"), ("1.2.3", "2"))
         for quote, literal in cases:
             with self.subTest(quote=quote, literal=literal), self.assertRaises(core.ResearchError):
@@ -191,7 +216,8 @@ class RunTests(unittest.TestCase):
     def test_grouped_numbers_keep_decimal_sign_exponent_and_delimiters(self):
         for quote, literal, expected in (("-3,000.5e+1", "-3,000.5e+1", "-30005"),
                                          ("32, 18 and 50", "32", "32"), ("$1M", "1", "1"),
-                                         ("Three years", "Three", "3"), ("+0.5%", "+0.5", "0.5")):
+                                         ("Three years", "Three", "3"), ("+0.5%", "+0.5", "0.5"),
+                                         ("minimum 3", "3", "3"), ("notminus 3", "3", "3")):
             with self.subTest(quote=quote):
                 self.assertEqual(core.observation_value({}, quote.encode(), "", quote=quote, literal=literal), Decimal(expected))
 
@@ -579,8 +605,10 @@ class PreflightTests(unittest.TestCase):
     def test_invalid_rpc_configuration_is_detected_without_dns(self):
         urls = ("http://example.com/canary", "https://user:canary@example.com", "https://example.com/#canary",
                 "https://example.com:8080/canary", "https://example.com:99999/canary", "https://[broken/canary",
-                "https://localhost/canary", "https://node.localhost/canary", "https://127.0.0.1/canary",
-                "https://10.0.0.1/canary", "https://[::1]/canary", "https://example.com/canary\nheader")
+                "https://localhost/canary", "https://localhost./canary", "https://node.localhost/canary",
+                "https://127.0.0.1/canary", "https://127.1/canary", "https://2130706433/canary",
+                "https://0x7f000001/canary", "https://0177.0.0.1/canary", "https://10.0.0.1/canary",
+                "https://[::1]/canary", "https://example.com/canary\nheader")
         for url in urls:
             with self.subTest(url=url), patch.dict("os.environ", {"CR_RPC_URL": url}, clear=True), \
                     patch.object(core.socket, "getaddrinfo") as dns:
@@ -679,8 +707,42 @@ class UtilityTests(unittest.TestCase):
                 core.public_url("https://example.com")
 
     def test_url_redaction(self):
-        self.assertNotIn("SECRET", core.safe_url("https://example.com/?api_key=SECRET&query=variational"))
-        self.assertIn("variational", core.safe_url("https://example.com/?api_key=SECRET&query=variational"))
+        redacted = core.safe_url("https://example.com/?api_key=SECRET&query=variational")
+        self.assertNotIn("SECRET", redacted)
+        self.assertIn("variational", redacted)
+        preserved = core.safe_url("https://docs.example.com/post?author=alice&keywords=omni&tokenomics=var&keynote=intro&authority=eip155")
+        for value in ("alice", "omni", "var", "intro", "eip155"):
+            self.assertIn(value, preserved)
+        for url in ("https://example.com/?apikey=SECRET", "https://example.com/?sig=SECRET",
+                    "https://example.com/?access_token=SECRET", "https://example.com/?authentication=SECRET",
+                    "https://example.com/?cookie=SECRET"):
+            self.assertNotIn("SECRET", core.safe_url(url))
+
+    def test_cross_host_redirect_blocks_credential_headers_only(self):
+        from urllib.request import Request
+
+        handler = core.PublicRedirects(lambda: None)
+        with patch.object(core, "public_url", side_effect=lambda url: url):
+            for header in ("X-Token", "X-Api-Secret", "Cookie", "Authorization"):
+                request = Request("https://api.example.com/data", headers={header: "SUPERSECRET", "User-Agent": "test"})
+                with self.subTest(header=header), self.assertRaisesRegex(core.ResearchError, "authenticated"):
+                    handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example/steal")
+            benign = Request("https://html.duckduckgo.com/html/", data=b"q=omni",
+                             headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "test"})
+            redirected = handler.redirect_request(benign, None, 302, "Found", {}, "https://duckduckgo.com/html/")
+            self.assertNotIn("SUPERSECRET", json.dumps(dict(redirected.header_items())))
+            self.assertEqual(redirected.get_method(), "GET")
+            same = Request("https://api.example.com/data", headers={"X-Token": "keep", "User-Agent": "test"})
+            stayed = handler.redirect_request(same, None, 302, "Found", {}, "https://api.example.com/next")
+            self.assertIn("keep", json.dumps(dict(stayed.header_items())))
+
+    def test_obfuscated_loopback_literals_do_not_trust_dns(self):
+        with patch.object(core.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("1.1.1.1", 443))]) as dns:
+            for url in ("https://2130706433/secret", "https://127.1/", "https://0x7f000001/",
+                        "https://0177.0.0.1/", "https://localhost./"):
+                with self.subTest(url=url), self.assertRaisesRegex(core.ResearchError, "Private|loopback|reserved"):
+                    core.public_url(url)
+        dns.assert_not_called()
 
     def test_parser_and_unknown_run_exit(self):
         args = parser().parse_args(["init", "Variational Omni", "--mode", "both"])
