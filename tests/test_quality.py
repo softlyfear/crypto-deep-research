@@ -59,6 +59,12 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(result["quality"]["status"], "adequate")
         self.assertIn("No confirmed independent cross-model verification", result["warnings"])
 
+    def test_written_null_coverage_is_invalid(self):
+        self.coverage = None
+        result = self.check()
+        self.assertFalse(result["ok"])
+        self.assertIn("coverage.json must be an object", result["errors"])
+
     def test_honest_partial_report_may_publish_but_not_as_full_research(self):
         self.coverage.update(answer_status="partial", stop_reason="access")
         self.coverage["valuation"] = {"kind": "illustrative_only", "basis": "No final denominator or executable price", "input_claim_ids": []}

@@ -50,6 +50,10 @@ class DiscoveryTests(unittest.TestCase):
         result = extract_links(text, "https://example.com/rewards/points.md")
         self.assertEqual(result["untrusted_leads"], [{"url": "https://example.com/news.md", "title": "Announcement"}])
 
+    def test_empty_class_attribute_does_not_abort_link_discovery(self):
+        result = extract_links('<a class href="/docs">Docs</a>', "https://example.com/")
+        self.assertEqual(result["untrusted_leads"], [{"url": "https://example.com/docs", "title": "Docs"}])
+
     def test_captcha_is_unavailable_not_negative_evidence_and_audit_cannot_search(self):
         with patch.object(core, "download", return_value=(b'<form id="challenge-form">Verify human</form>', "text/html", 200, "https://html.duckduckgo.com/html/")) as download:
             result = mcp.dispatch(["search", str(self.run), "Example"], root=self.root)

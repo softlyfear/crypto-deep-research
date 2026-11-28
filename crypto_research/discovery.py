@@ -40,7 +40,7 @@ class Anchors(HTMLParser):
         if self.ignored or tag != "a":
             return
         attrs = dict(attrs)
-        classes = attrs.get("class", "").split()
+        classes = (attrs.get("class") or "").split()
         if attrs.get("href") and (not self.results_only or "result__a" in classes):
             self.current = [attrs["href"], []]
 

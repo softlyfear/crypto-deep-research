@@ -885,7 +885,9 @@ def check(run, *, final=False, _snapshot=False):
                 errors.append("Report is empty")
             claims, claims_loaded = final_json("claims.json")
             verification, verification_loaded = final_json("verification.json")
-            coverage, _ = final_json("coverage.json")
+            coverage, coverage_loaded = final_json("coverage.json")
+            if coverage_loaded and coverage is None:
+                errors.append("coverage.json must be an object")
             if claims_loaded:
                 if not isinstance(claims, list) or not claims:
                     errors.append("claims.json must be a non-empty array")
